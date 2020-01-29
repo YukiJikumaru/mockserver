@@ -1,13 +1,3 @@
-# meta
-MAIN := main.go
-LDFLAGS := -X 'main.version=$(VERSION)' -X 'main.revision=$(REVISION)'
-GOPATH=$(shell go env GOPATH)
-
-## env
-export GO111MODULE=on
-export GOOS=linux
-export GOARCH=amd64
-
 all: build
 
 ## build

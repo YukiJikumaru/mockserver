@@ -53,6 +53,7 @@ func main() {
 	e.GET("/invalidlength/long", invalidlengthTooLong)
 	e.GET("/invalidlength/short", invalidlengthTooShort)
 	e.GET("/statuscode/:code", statuscode)
+	e.GET("/nabeatsu/:num", nabeatsu)
 
 	e.POST("/", post)
 
@@ -166,6 +167,18 @@ func statuscode(c echo.Context) error {
 		i = 0
 	}
 	return c.String(i, "")
+}
+
+func nabeatsu(c echo.Context) error {
+	num, err := strconv.Atoi(c.Param("num"))
+	if err != nil {
+		num = 0
+	}
+	if num % 3 == 0 {
+		return c.String(http.StatusOK, fmt.Sprintf("%d\n", num))
+	} else {
+		return c.String(http.StatusInternalServerError, "AHO\n")
+	}
 }
 
 func post(c echo.Context) error {
