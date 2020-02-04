@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -42,7 +43,7 @@ func main() {
 		e.Use(middleware.GzipWithConfig(middleware.GzipConfig{}))
 	}
 
-	e.GET("/", hello)
+	e.Any("/", dump)
 	e.GET("/help", help)
 	e.GET("/nothing", nothing)
 	e.GET("/streaming", streaming)
@@ -54,8 +55,6 @@ func main() {
 	e.GET("/invalidlength/short", invalidlengthTooShort)
 	e.GET("/statuscode/:code", statuscode)
 	e.GET("/nabeatsu/:num", nabeatsu)
-
-	e.POST("/", post)
 
 	s := &http.Server{
 		Addr:              fmt.Sprintf(":%d", *port),
@@ -69,6 +68,27 @@ func main() {
 	e.Logger.Fatal(e.StartServer(s))
 }
 
+func dump(c echo.Context) error {
+	req := c.Request()
+
+	var ret []string
+
+	ret = append(ret, fmt.Sprintf("%s %s %s", req.Method, req.URL.Path, req.Proto))
+	ret = append(ret, fmt.Sprintf("Host: %s", req.Host))
+
+	for k, values := range req.Header {
+		for _, v := range values {
+			ret = append(ret, fmt.Sprintf("%s: %s", k, v))
+		}
+	}
+
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(req.Body)
+	ret = append(ret, buf.String())
+
+	return c.String(http.StatusOK, strings.Join(ret, "\n"))
+}
+
 func hello(c echo.Context) error {
 	return c.String(http.StatusOK, "Hello, World!\n")
 }
@@ -76,6 +96,7 @@ func hello(c echo.Context) error {
 func help(c echo.Context) error {
 	msg := `
 curl http://localhost:{{.port}}/
+curl http://localhost:{{.port}}/dump
 curl http://localhost:{{.port}}/nothing
 curl http://localhost:{{.port}}/streaming
 curl http://localhost:{{.port}}/streaming/infinite
@@ -85,8 +106,6 @@ curl http://localhost:{{.port}}/json/invalid
 curl http://localhost:{{.port}}/invalidlength/long
 curl http://localhost:{{.port}}/invalidlength/short
 curl http://localhost:{{.port}}/statuscode/:code
-
-curl -X POST http://localhost:{{.port}}/
   `
 
 	t := template.Must(template.New("name").Parse(msg))
@@ -174,13 +193,9 @@ func nabeatsu(c echo.Context) error {
 	if err != nil {
 		num = 0
 	}
-	if num % 3 == 0 {
+	if num%3 == 0 {
 		return c.String(http.StatusOK, fmt.Sprintf("%d\n", num))
 	} else {
 		return c.String(http.StatusInternalServerError, "AHO\n")
 	}
-}
-
-func post(c echo.Context) error {
-	return c.String(http.StatusOK, "Hello, World!\n")
 }
