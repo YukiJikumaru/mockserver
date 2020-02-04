@@ -195,7 +195,7 @@ func nabeatsu(c echo.Context) error {
 	}
 	if num%3 == 0 {
 		return c.String(http.StatusOK, fmt.Sprintf("%d\n", num))
-	} else {
-		return c.String(http.StatusInternalServerError, "AHO\n")
 	}
+
+	return c.String(http.StatusInternalServerError, "AHO\n")
 }

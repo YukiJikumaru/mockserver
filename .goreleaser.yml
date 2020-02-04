@@ -5,8 +5,7 @@ before:
   hooks:
     - go mod tidy
 builds:
-  - main: mockserver
-    binary: 
+  - binary: mockserver
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
