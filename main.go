@@ -89,6 +89,7 @@ func main() {
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
 	e.Use(middleware.BodyDump(func(c echo.Context, reqBody, resBody []byte) {
 		log.Println(string(reqBody))
 	}))
@@ -97,10 +98,13 @@ func main() {
 	}
 
 	e.Any("/", dump)
+	e.Any("/dump", dump)
 	e.GET("/help", help)
 	e.GET("/nothing", nothing)
 	e.GET("/streaming", streaming)
 	e.GET("/streaming/infinite", streamingInfinite)
+	e.GET("/301redirect", movedPermanently)
+	e.GET("/302redirect", found)
 	e.GET("/sleep", sleep)
 	e.GET("/json/valid", validjson)
 	e.GET("/json/invalid", invalidjson)
@@ -163,6 +167,8 @@ curl http://localhost:{{.port}}/dump
 curl http://localhost:{{.port}}/nothing
 curl http://localhost:{{.port}}/streaming
 curl http://localhost:{{.port}}/streaming/infinite
+curl http://localhost:{{.port}}/301redirect?url=http://example.com
+curl http://localhost:{{.port}}/302redirect?url=http://example.com
 curl http://localhost:{{.port}}/sleep?msec=1000
 curl http://localhost:{{.port}}/json/valid
 curl http://localhost:{{.port}}/json/invalid
@@ -208,6 +214,16 @@ func streamingInfinite(c echo.Context) error {
 		c.Response().Flush()
 		time.Sleep(1 * time.Second)
 	}
+}
+
+func movedPermanently(c echo.Context) error {
+	url := c.QueryParam("url")
+	return c.Redirect(http.StatusMovedPermanently, url)
+}
+
+func found(c echo.Context) error {
+	url := c.QueryParam("url")
+	return c.Redirect(http.StatusFound, url)
 }
 
 func sleep(c echo.Context) error {
