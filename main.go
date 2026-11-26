@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -12,85 +13,124 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 )
 
-// openssl req -x509 -out localhost.crt -keyout localhost.key -newkey rsa:2048 -nodes -sha256 -subj '/CN=localhost' -extensions EXT -config <(printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth")
+// -days を省くと有効期限が 30 日になる。
+// keyCertSign がないと、OpenSSL（Ruby など）はこの証明書を ca_file に渡しても自分自身の発行者と認めず、検証に失敗する（Go は通る）
+// openssl req -x509 -days 3650 -out localhost.crt -keyout localhost.key -newkey rsa:2048 -nodes -sha256 -subj '/CN=localhost' -extensions EXT -config <(printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=digitalSignature,keyCertSign\nextendedKeyUsage=serverAuth")
 var localhostCert = []byte(`-----BEGIN CERTIFICATE-----
-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
+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
 -----END CERTIFICATE-----`)
 
 var localhostKey = []byte(`-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC8QK3WIItaMhj3
-5aM9AyB4wURvRdVi2PlhIL0+iN9AVJ31hMb0MIh9sUUJYjS8/1bK4nIFKveALndc
-iHQ0yZw6W0ogRuLGzAKtdjDshVsuU1drggL631JhxEXhPqZfCq0Z57enl5eufJ9L
-NF2/m+O2RDAzHpqXKnKpb0gqEkSdrKR2Rt6GQCV6GNjnehDv0kFWGiUxYd8OVVX7
-aLDtMt6HVhnyRZMwadaGokioUAaC6RiOA6WN/qTyzMYyBAkTvC0NkElushOgeLBm
-WZXgLPlHuyZwWtSChz7MogZEiFfkC0DjP9MQC2JG/SV6IZ9xovbfehNshPhgamsk
-cAxbdX3ZAgMBAAECggEBAIgPW1UjCnTzNnadQ6FKTELatOKTn4mk9oELz5uOA4WU
-YuJbyAwfs9bcs9/3WdSr3AghKHWxu1aqvtxjR1IL0V2gM3Amq6sxMlI61Vttexx9
-Yfay7gJyPDGrUTJePJL+vWO2xVdcymVzbxJE0+kz+531pLydxu+w31S0uHyn3W3z
-ZmLfWoEB22TEZsOhvPXU0FdsPL6xQZcIeGppyzueMt06/EN8+6o3nuwrOHTkBR3I
-RJlmzx2ANqh/CVXVnr4kKdksBvR7r705m+K0yNHWhEowYQG/3IPUAwlCUPVv/PAp
-8J3dO/2MQtpkYP+zrYmz7fbg8hQ00NOJttdpQOcJtT0CgYEA7LBx2jzF0ZU9OmLx
-Wo2bu2WSpF5kaz39CNEdnZjA9fkw3fzQ0pyCSCF40ICAGKlgOdwt75CXVYMkCnoq
-nrOXMO5owUjDpfE01n/0UhOMrMt7R9O3RpZ7/96qqoSX6uX2gy2cAzllTvUuAP9a
-1G4d7w0ngmB7LmV1hGUI8Y9QH+MCgYEAy5yTIe9LbKNnX8JdjEzgdvev8ep73rno
-+vY2nZaZtJDnEVipZG2ZvAsp6L5hyeC0WQ/pHFMMb7bL04gUBRxZfv4QDFIKUKVq
-fPSL7pTe1FInoPzj5nOAjFJyYHrpbLzXuWcyv4+b9haCMIluH64lXYuJ9Aay9Vmw
-6i3NWOqaYBMCgYBFq45n2fm0voQ+Wn+G0yYjHDv1DB/s/VstLDjWee9auBYtUcy6
-If2rc8bXQOvz1m+PuIMBAIO7VRXXy6wd+OkpKxREyMFmaEDQXuuw+TYwatkIBIbv
-TT6Ey6ta9Bqvty8/374LqOpsOnlnK8M1wpAnHK0jkHjR6GWWKhNe33uLVwKBgHzl
-sddKG2Erpvi1mH68laBEdVgW9x77uW9gYsYuIGED1cntMhNZq8kOrAmJ5yBXxyku
-ulbWlrVcUxGR0n4EEt30aNG17X/kyDqYI9IY3csuDgMRvZaaWUs6M9D89HzwJgAj
-zpx1Mj01N20gkD28rE0CkH/xMAuSlhRAPkuBtWqjAoGBANu+QkOOOy7ded6Xhkym
-uTdyYPUw34ZiITwr0ZZbvPjx6Lz6BmVqEIRJr/Smj2BvtFkjY60Jwk1GxXPF89St
-7ucN09JVhYe/jZUW5Va8rDM/dJ8ZRTqYxmZT9jH/fnElBho028WkXhKexkLaDYib
-0JujJzGjjomJftTU+sPV8ZwR
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDEQtccglOSrDn+
+HlyStvcwbAX+v3gPfkEvGZB0OQnm38cE30AZygqZuyt6THLnVfJJng0rg/GaTi/u
+dzKHREBHw9B64FQ6brJDUQndlU+tWCcdDrRZ+n7lasY3waD+9N0vtRsHu+VJiS5Q
+6jHqaNVE+DraqvfjOK7fQuCxcZRDYIiPitBVBdCrTH+FwSqvdD5h3PBBTzA+QsvS
+AmC57K6u4fuCiOBmOhsrTgS4pz/vhLqKequLveLaxF9Vq+ZIU7y5ayarOxf/uXt+
+Cjf/nMnxdCTFhE2piVWyxoKQejmp6+8zF2JYIFaa7KVM9LALoQl2S82Jrsd7WQ1o
+jbeeJxa5AgMBAAECggEAGtEzSX75YnJMHlARwC5mCmTIUO3ivuM2jvQETA07MCPl
+suG6hYuY9TahEz38+WVCDRMeo5KM4dPLMt9wtRD7Y5L7Gr8qYy2bCB27pl5vm7UO
+6yaGOEFFM53qZdX8ZLoauxkZD256PxkSjhXiKjCW66yrhhOUeaTWKEWgJD7rzmTW
+Bd7OVgHY1ayyA6S4zPZjKLGbcqBIIAnXQZOZVovCPkDtuSrtDhyLWLyWrhzLVrir
+xnaNn0FiXYC+fKhW9gyhAU8uX4kRmYa1fD053aEORgInLm2YVa326CMECBW4nYYN
+I3sKkVQeM+W9kF78cB+Eai8OYJQYS7VyiqDanoHqcQKBgQDuF+JJ/SC/DSqmh17R
+L6WljDP/g+o/GCv01Q991NjmURQYUvfnRLgTDMN9hDvhmFmFsqmH4+rJQCTrJZYT
+Vl+0+UYEJCi0OHjfM+npxvla+k4fJMZY2TzsxwMNQOK8Y2gFSIFVftclB7C/flni
+rqZY+uiBk4pIG1vHbOXEmH3C3QKBgQDTBYrYXaoKV3L1fFGy9Uu4cy7eRAUfy1ND
+3ZBgavpRPhE9bvRdeLX9kAGce3ldChF9/osgWEtZcV4/D51sw0DQfjBLA/Ucx2Lx
+kTPiiWZm9YkSY8zUGhLutP4HawrvC9W9j+bdhq1n5AYGn0bgBxNQ+ucY25JG1bDh
+d7bHcdIfjQKBgFcBeVsKWkYWvKhAPcD5xXGaq4HLJfXKkn2UwmV8O4rmxA4je54S
+uaWUe3fJs8w7zTMTV+plum2yuAsKIC6O2Miccx6eTBWXsWv3X5pjcMnzQEsXODhN
+onrwOshEFtc7CE8t8L1abaqFhexkctpocjd/8Skwzk6NWNumisxt4T8tAoGAYs8C
+j4N0HnmKI7Z9jt1bAlg0xvB0scmECJATjYIqCaaVbf2pQKdIGB25E2uhjVYskKGC
+xbdyOMRjzAVkwku+6qFbvZRxznLyOoiyEc4ie+1WrJy8iUhYOxvWouSVbw9MmwFp
+qarpQW88/xbPmhDWE6IYWcRefvqKY1ip5kO+jvUCgYEAnouLtITHa0pD28qd0oVu
+rwFtQx1DhhKNo3w1xYBOG2RC6iPCHL285wjWzVAvv5WNh4KqOtwyokBdx7mqIPzU
+r+SqDCaV+SyAPxs/DgcPjmrZDAAj0OffwW+/qCv0dcY2HVj8OkxQaXOWsF3lkbWY
+dMeLXylc3OJdkaZQiKgfBLk=
 -----END PRIVATE KEY-----`)
 
+// テストからも既定値で参照できるよう、フラグはパッケージの変数として定義する（Parse は main で行う）
 var (
-	ssl                   *bool
-	port                  *int
-	readTimeoutMsec       *int
-	writeTimeoutMsec      *int
-	readHeaderTimeoutMsec *int
-	idleTimeoutMsec       *int
-	gzipEnable            *bool
+	ssl                   = flag.Bool("s", false, "ssl")
+	port                  = flag.Int("p", 3001, "binding port")
+	readTimeoutMsec       = flag.Int("rt", 0, "read timeout milliseconds")
+	readHeaderTimeoutMsec = flag.Int("rht", 0, "read header timeout milliseconds")
+	writeTimeoutMsec      = flag.Int("wt", 0, "write timeout milliseconds")
+	idleTimeoutMsec       = flag.Int("it", 0, "idle timeout milliseconds")
+	gzipEnable            = flag.Bool("gz", false, "gzip")
+	tlsFailPort           = flag.Int("tlsfail-port", 0, "port that drops the connection during the TLS handshake (0 = disabled)")
+	tlsFailMode           = flag.String("tlsfail-mode", modeCloseNotify, "close_notify | reset | eof | hang")
+	proxyPort             = flag.Int("proxy-port", 0, "fake proxy port accepting CONNECT only (0 = disabled)")
+	proxyMode             = flag.String("proxy-mode", modeTunnel, "tunnel | 503 | close_notify | reset | eof | hang")
 	tlsConfig             *tls.Config
 )
 
 func main() {
-	ssl = flag.Bool("s", false, "ssl")
-	port = flag.Int("p", 3001, "binding port")
-	readTimeoutMsec = flag.Int("rt", 0, "read timeout milliseconds")
-	readHeaderTimeoutMsec = flag.Int("rht", 0, "read header timeout milliseconds")
-	writeTimeoutMsec = flag.Int("wt", 0, "write timeout milliseconds")
-	idleTimeoutMsec = flag.Int("it", 0, "idle timeout milliseconds")
-	gzipEnable = flag.Bool("gz", false, "gzip")
 	flag.Parse()
 
+	startRawServer("tlsfail", *tlsFailPort, *tlsFailMode, tlsFailModes, serveTLSFail)
+	startRawServer("proxy", *proxyPort, *proxyMode, proxyModes, serveProxy)
+
+	e := newEcho()
+
+	if *ssl {
+		cert, err := tls.X509KeyPair(localhostCert, localhostKey)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
+	sc := echo.StartConfig{
+		Address: fmt.Sprintf(":%d", *port),
+		// StartTLS は h2 を有効にするので使わない。v4 の StartServer と同じく HTTP/1.1 で TLS を待つ
+		TLSConfig: tlsConfig,
+		BeforeServeFunc: func(s *http.Server) error {
+			// v5 は ReadTimeout を 30 秒にするので、フラグの値（既定は 0 = 無制限）で上書きする
+			s.ReadTimeout = time.Duration(*readTimeoutMsec) * time.Millisecond
+			s.ReadHeaderTimeout = time.Duration(*readHeaderTimeoutMsec) * time.Millisecond
+			s.WriteTimeout = time.Duration(*writeTimeoutMsec) * time.Millisecond
+			s.IdleTimeout = time.Duration(*idleTimeoutMsec) * time.Millisecond
+			// /keepalive が同じ接続の何本目の要求かを数えるのに使う
+			s.ConnContext = connContext
+			log.Println(s)
+			return nil
+		},
+	}
+
+	if err := sc.Start(context.Background(), e); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func newEcho() *echo.Echo {
 	e := echo.New()
-	e.Use(middleware.Logger())
+	e.Pre(countRequestsPerConn)
+	e.Use(middleware.RequestLogger())
 	e.Use(middleware.Recover())
-	e.Use(middleware.CORS())
-	e.Use(middleware.BodyDump(func(c echo.Context, reqBody, resBody []byte) {
+	// v5 の CORS() は引数なしだと設定エラーになる。v4 の既定と同じく全オリジンを許可する
+	e.Use(middleware.CORS("*"))
+	e.Use(middleware.BodyDump(func(c *echo.Context, reqBody, resBody []byte, err error) {
 		log.Println(string(reqBody))
 	}))
 	if *gzipEnable {
@@ -112,30 +152,18 @@ func main() {
 	e.GET("/invalidlength/short", invalidlengthTooShort)
 	e.GET("/statuscode/:code", statuscode)
 	e.GET("/nabeatsu/:num", nabeatsu)
+	e.Any("/close/:mode", closeHandler)
+	e.Any("/keepalive/:mode", keepAliveHandler)
 
-	if *ssl {
-		cert, err := tls.X509KeyPair(localhostCert, localhostKey)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
-	}
+	seq := newSequenceStore()
+	e.Any("/sequence/:key", seq.handle)
+	e.GET("/sequence/:key/history", seq.handleHistory)
+	e.Any("/sequence/:key/reset", seq.handleReset)
 
-	s := &http.Server{
-		Addr:              fmt.Sprintf(":%d", *port),
-		ReadTimeout:       time.Duration(*readTimeoutMsec) * time.Millisecond,
-		ReadHeaderTimeout: time.Duration(*readHeaderTimeoutMsec) * time.Millisecond,
-		WriteTimeout:      time.Duration(*writeTimeoutMsec) * time.Millisecond,
-		IdleTimeout:       time.Duration(*idleTimeoutMsec) * time.Millisecond,
-		TLSConfig:         tlsConfig,
-	}
-	log.Println(s)
-
-	e.Logger.Fatal(e.StartServer(s))
+	return e
 }
 
-func dump(c echo.Context) error {
+func dump(c *echo.Context) error {
 	req := c.Request()
 
 	var ret []string
@@ -156,11 +184,11 @@ func dump(c echo.Context) error {
 	return c.String(http.StatusOK, strings.Join(ret, "\n"))
 }
 
-func hello(c echo.Context) error {
+func hello(c *echo.Context) error {
 	return c.String(http.StatusOK, "Hello, World!\n")
 }
 
-func help(c echo.Context) error {
+func help(c *echo.Context) error {
 	msg := `
 curl http://localhost:{{.port}}/
 curl http://localhost:{{.port}}/dump
@@ -175,21 +203,34 @@ curl http://localhost:{{.port}}/json/invalid
 curl http://localhost:{{.port}}/invalidlength/long
 curl http://localhost:{{.port}}/invalidlength/short
 curl http://localhost:{{.port}}/statuscode/:code
+curl http://localhost:{{.port}}/close/eof                  # read the request, then close without responding (FIN)
+curl http://localhost:{{.port}}/close/reset                # read the request, then reset without responding (RST)
+curl http://localhost:{{.port}}/keepalive/eof?nth=2        # respond until the nth request on the same connection, then close
+curl http://localhost:{{.port}}/keepalive/reset?nth=2
+curl "http://localhost:{{.port}}/sequence/KEY?steps=reset,503*2,200"  # use the next step on each request to KEY (status code | eof | reset | sleep:msec)
+curl http://localhost:{{.port}}/sequence/KEY/history                # requests received for KEY (JSON)
+curl -X POST http://localhost:{{.port}}/sequence/KEY/reset          # start counting KEY again
+
+-tlsfail-port=N -tlsfail-mode=close_notify|reset|eof|hang  # after receiving the ClientHello, drop the connection (hang: never respond)
+curl -k https://localhost:{{.tlsFailPort}}/
+
+-proxy-port=N -proxy-mode=tunnel|503|close_notify|reset|eof|hang  # fake proxy (CONNECT only; hang: never respond to CONNECT)
+curl -k -x http://localhost:{{.proxyPort}} https://localhost:{{.port}}/help   # requires -s
   `
 
 	t := template.Must(template.New("name").Parse(msg))
 	buf := new(bytes.Buffer)
-	data := map[string]interface{}{"port": *port}
+	data := map[string]interface{}{"port": *port, "tlsFailPort": *tlsFailPort, "proxyPort": *proxyPort}
 	t.Execute(buf, data)
 
 	return c.String(http.StatusOK, buf.String())
 }
 
-func nothing(c echo.Context) error {
+func nothing(c *echo.Context) error {
 	return c.String(http.StatusOK, "")
 }
 
-func streaming(c echo.Context) error {
+func streaming(c *echo.Context) error {
 	c.Response().WriteHeader(http.StatusOK)
 	cnt := 5
 	for i := 1; i <= cnt; i++ {
@@ -198,35 +239,39 @@ func streaming(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		c.Response().Flush()
+		if err := http.NewResponseController(c.Response()).Flush(); err != nil {
+			return err
+		}
 		time.Sleep(1 * time.Second)
 	}
 	return nil
 }
 
-func streamingInfinite(c echo.Context) error {
+func streamingInfinite(c *echo.Context) error {
 	c.Response().WriteHeader(http.StatusOK)
 	for {
 		_, err := c.Response().Write([]byte("HELLO\n"))
 		if err != nil {
 			return err
 		}
-		c.Response().Flush()
+		if err := http.NewResponseController(c.Response()).Flush(); err != nil {
+			return err
+		}
 		time.Sleep(1 * time.Second)
 	}
 }
 
-func movedPermanently(c echo.Context) error {
+func movedPermanently(c *echo.Context) error {
 	url := c.QueryParam("url")
 	return c.Redirect(http.StatusMovedPermanently, url)
 }
 
-func found(c echo.Context) error {
+func found(c *echo.Context) error {
 	url := c.QueryParam("url")
 	return c.Redirect(http.StatusFound, url)
 }
 
-func sleep(c echo.Context) error {
+func sleep(c *echo.Context) error {
 	msec := c.QueryParam("msec")
 	i, err := strconv.Atoi(msec)
 	if err != nil {
@@ -238,27 +283,27 @@ func sleep(c echo.Context) error {
 	return c.String(http.StatusOK, fmt.Sprintf("Sleep %d milliseconds.", i))
 }
 
-func validjson(c echo.Context) error {
+func validjson(c *echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSONCharsetUTF8)
 	return c.String(http.StatusOK, "{\"name\":\"hello\"}")
 }
 
-func invalidjson(c echo.Context) error {
+func invalidjson(c *echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSONCharsetUTF8)
 	return c.String(http.StatusOK, "{\"name\":\"hello")
 }
 
-func invalidlengthTooShort(c echo.Context) error {
+func invalidlengthTooShort(c *echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentLength, "100")
 	return c.String(http.StatusOK, "Hello")
 }
 
-func invalidlengthTooLong(c echo.Context) error {
+func invalidlengthTooLong(c *echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentLength, "1")
 	return c.String(http.StatusOK, "Hello")
 }
 
-func statuscode(c echo.Context) error {
+func statuscode(c *echo.Context) error {
 	code := c.Param("code")
 	i, err := strconv.Atoi(code)
 	if err != nil {
@@ -267,7 +312,7 @@ func statuscode(c echo.Context) error {
 	return c.String(i, "")
 }
 
-func nabeatsu(c echo.Context) error {
+func nabeatsu(c *echo.Context) error {
 	num, err := strconv.Atoi(c.Param("num"))
 	if err != nil {
 		num = 0
