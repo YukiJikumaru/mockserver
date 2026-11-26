@@ -107,6 +107,17 @@ func assertReset(t *testing.T, got []byte, err error) {
 	}
 }
 
+// assertHang は、相手が何も送らず閉じもしないことを確かめる。短い待ち時間で読み、タイムアウトになれば止まっている
+func assertHang(t *testing.T, c net.Conn, r io.Reader) {
+	t.Helper()
+	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	got, err := readUntilClosed(r)
+	var ne net.Error
+	if len(got) != 0 || !errors.As(err, &ne) || !ne.Timeout() {
+		t.Fatalf("何も返さず、閉じもせずに待ち続けるはず: got=%q err=%v", got, err)
+	}
+}
+
 func assertCloseNotify(t *testing.T, got []byte, err error) {
 	t.Helper()
 	if !bytes.Equal(got, closeNotifyAlert) || !errors.Is(err, io.EOF) {
@@ -297,6 +308,24 @@ func TestTLSFail(t *testing.T) {
 		})
 	}
 
+	t.Run("hang は ClientHello を受けても何も返さず、閉じもしない", func(t *testing.T) {
+		addr := startListener(t, func(ln net.Listener) { serveTLSFail(ln, "hang") })
+		c := dialRaw(t, addr)
+		if _, err := c.Write(fakeClientHello); err != nil {
+			t.Fatal(err)
+		}
+		assertHang(t, c, c)
+	})
+
+	t.Run("hang では本物の TLS クライアントはハンドシェイクのタイムアウトになる", func(t *testing.T) {
+		addr := startListener(t, func(ln net.Listener) { serveTLSFail(ln, "hang") })
+		_, err := tls.DialWithDialer(&net.Dialer{Timeout: 500 * time.Millisecond}, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		var ne net.Error
+		if !errors.As(err, &ne) || !ne.Timeout() {
+			t.Fatalf("タイムアウトになるはず: %v", err)
+		}
+	})
+
 	t.Run("本物の TLS クライアントはハンドシェイクに失敗する", func(t *testing.T) {
 		addr := startListener(t, func(ln net.Listener) { serveTLSFail(ln, "close_notify") })
 		c, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
@@ -357,6 +386,26 @@ func TestProxy(t *testing.T) {
 			tc.check(t, got, err)
 		})
 	}
+
+	t.Run("hang は CONNECT に応答せず、閉じもしない", func(t *testing.T) {
+		proxyAddr := startListener(t, func(ln net.Listener) { serveProxy(ln, "hang") })
+		c := dialRaw(t, proxyAddr)
+		fmt.Fprint(c, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+		assertHang(t, c, c)
+	})
+
+	t.Run("tunnel の宛先を tlsfail の hang にすると、CONNECT は通ってハンドシェイクで止まる", func(t *testing.T) {
+		tlsFailAddr := startListener(t, func(ln net.Listener) { serveTLSFail(ln, "hang") })
+		proxyAddr := startListener(t, func(ln net.Listener) { serveProxy(ln, "tunnel") })
+		c, br, res := connect(t, proxyAddr, tlsFailAddr)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", res.StatusCode)
+		}
+		if _, err := c.Write(fakeClientHello); err != nil {
+			t.Fatal(err)
+		}
+		assertHang(t, c, br)
+	})
 
 	t.Run("tunnel は宛先へ中継する", func(t *testing.T) {
 		ts := startEcho(t, true)

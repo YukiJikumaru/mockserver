@@ -6,8 +6,8 @@ HTTP クライアントを試すためのモックサーバーです。
 
 - 要求を受けたあと、応答せずに接続を切る
 - 同じ接続の N 本目の要求で切る
-- TLS のハンドシェイクの途中で切る
-- プロキシの CONNECT で失敗させる
+- TLS のハンドシェイクの途中で切る・止まる
+- プロキシの CONNECT で失敗させる・止まる
 - 同じ要求を繰り返し送ると、失敗してから成功する
 
 クライアントのタイムアウト・リトライ・エラー処理が、それぞれの失敗でどう動くかを確かめるのに使えます。
@@ -42,10 +42,10 @@ ruby -rnet/http -e 'puts Net::HTTP.get(URI("http://localhost:3001/help"))'
 | `-wt` | `0` | 応答を書くときのタイムアウト（ミリ秒）。0 は無制限 |
 | `-it` | `0` | keep-alive で次の要求を待つ時間（ミリ秒）。0 のときは `-rt` の値を使う |
 | `-gz` | なし | クライアントが `Accept-Encoding: gzip` を送ったときに、応答を gzip で圧縮する |
-| `-tlsfail-port` | `0` | TLS のハンドシェイク中に切るポート。0 で無効（[TLS のハンドシェイク中に切る](#tls-のハンドシェイク中に切る)） |
-| `-tlsfail-mode` | `close_notify` | `close_notify`・`reset`・`eof` のどれか |
+| `-tlsfail-port` | `0` | TLS のハンドシェイクで失敗させるポート。0 で無効（[TLS のハンドシェイクで失敗させる](#tls-のハンドシェイクで失敗させる)） |
+| `-tlsfail-mode` | `close_notify` | `close_notify`・`reset`・`eof`・`hang` のどれか |
 | `-proxy-port` | `0` | 偽プロキシのポート。0 で無効（[偽プロキシ](#偽プロキシ)） |
-| `-proxy-mode` | `tunnel` | `tunnel`・`503`・`close_notify`・`reset`・`eof` のどれか |
+| `-proxy-mode` | `tunnel` | `tunnel`・`503`・`close_notify`・`reset`・`eof`・`hang` のどれか |
 
 ## 決まった応答を返す
 
@@ -169,15 +169,18 @@ Net::HTTP.start('localhost', 3001) do |http|
 end
 ```
 
-### TLS のハンドシェイク中に切る
+### TLS のハンドシェイクで失敗させる
 
-`-tlsfail-port` で指定したポートは、HTTP を話しません。ClientHello のレコードを 1 つ受け取ったところで、`-tlsfail-mode` のとおりに接続を切ります。
+`-tlsfail-port` で指定したポートは、HTTP を話しません。ClientHello のレコードを 1 つ受け取ったところで、`-tlsfail-mode` のとおりに接続を切るか、止まります。
 
 | `-tlsfail-mode` | 動き |
 |---|---|
 | `close_notify` | TLS の close_notify のアラートだけを返して閉じる |
 | `reset` | RST で切る |
 | `eof` | 何も返さずに FIN で閉じる |
+| `hang` | 何も返さず、閉じもしない。クライアントが切るまで待つ |
+
+`hang` は、接続を作る途中で相手が黙ったときの、クライアントのタイムアウトを確かめるのに使います。
 
 ```sh
 go run . -tlsfail-port 4443 -tlsfail-mode close_notify
@@ -188,6 +191,7 @@ require 'net/http'
 
 http = Net::HTTP.new('localhost', 4443)
 http.use_ssl = true
+http.open_timeout = 3 # hang のときに待つ時間の上限
 begin
   http.start
 rescue => e
@@ -203,7 +207,8 @@ end
 |---|---|
 | `tunnel` | 宛先につないで中継する。宛先につながらなければ、CONNECT に 503 を返す |
 | `503` | CONNECT に 503 を返す |
-| `close_notify`・`reset`・`eof` | CONNECT に 200 を返したあと、ClientHello を受けたところで、[TLS のハンドシェイク中に切る](#tls-のハンドシェイク中に切る) と同じ方法で切る |
+| `close_notify`・`reset`・`eof` | CONNECT に 200 を返したあと、ClientHello を受けたところで、[TLS のハンドシェイクで失敗させる](#tls-のハンドシェイクで失敗させる) と同じ方法で切る |
+| `hang` | CONNECT に応答せず、閉じもしない。クライアントが切るまで待つ |
 
 `tunnel` で中継している間に宛先が RST で切っても、偽プロキシはクライアント側を FIN で閉じます。RST はクライアントまで伝わりません。
 
@@ -219,8 +224,31 @@ require 'net/http'
 http = Net::HTTP.new('localhost', 3443, 'localhost', 8080)
 http.use_ssl = true
 http.ca_file = 'localhost.crt' # HTTPS の証明書を参照
+http.open_timeout = 3 # hang のときに待つ時間の上限
+http.read_timeout = 3
 begin
   puts http.get('/help').code
+rescue => e
+  puts "#{e.class}: #{e.message}"
+end
+```
+
+CONNECT は通し、その先の TLS のハンドシェイクで止めたいときは、`tunnel` の宛先を `-tlsfail-mode hang` のポートにします。
+
+```sh
+# 偽プロキシ（8080）は CONNECT に 200 を返し、宛先の 4443 はハンドシェイクで止まる
+go run . -tlsfail-port 4443 -tlsfail-mode hang -proxy-port 8080 -proxy-mode tunnel
+```
+
+```ruby
+require 'net/http'
+
+http = Net::HTTP.new('localhost', 4443, 'localhost', 8080)
+http.use_ssl = true
+http.open_timeout = 3
+http.read_timeout = 3
+begin
+  http.start
 rescue => e
   puts "#{e.class}: #{e.message}"
 end

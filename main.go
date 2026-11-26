@@ -78,9 +78,9 @@ var (
 	idleTimeoutMsec       = flag.Int("it", 0, "idle timeout milliseconds")
 	gzipEnable            = flag.Bool("gz", false, "gzip")
 	tlsFailPort           = flag.Int("tlsfail-port", 0, "port that drops the connection during the TLS handshake (0 = disabled)")
-	tlsFailMode           = flag.String("tlsfail-mode", modeCloseNotify, "close_notify | reset | eof")
+	tlsFailMode           = flag.String("tlsfail-mode", modeCloseNotify, "close_notify | reset | eof | hang")
 	proxyPort             = flag.Int("proxy-port", 0, "fake proxy port accepting CONNECT only (0 = disabled)")
-	proxyMode             = flag.String("proxy-mode", modeTunnel, "tunnel | 503 | close_notify | reset | eof")
+	proxyMode             = flag.String("proxy-mode", modeTunnel, "tunnel | 503 | close_notify | reset | eof | hang")
 	tlsConfig             *tls.Config
 )
 
@@ -211,10 +211,10 @@ curl "http://localhost:{{.port}}/sequence/KEY?steps=reset,503*2,200"  # use the 
 curl http://localhost:{{.port}}/sequence/KEY/history                # requests received for KEY (JSON)
 curl -X POST http://localhost:{{.port}}/sequence/KEY/reset          # start counting KEY again
 
--tlsfail-port=N -tlsfail-mode=close_notify|reset|eof       # drop the connection after receiving the ClientHello
+-tlsfail-port=N -tlsfail-mode=close_notify|reset|eof|hang  # after receiving the ClientHello, drop the connection (hang: never respond)
 curl -k https://localhost:{{.tlsFailPort}}/
 
--proxy-port=N -proxy-mode=tunnel|503|close_notify|reset|eof  # fake proxy (CONNECT only)
+-proxy-port=N -proxy-mode=tunnel|503|close_notify|reset|eof|hang  # fake proxy (CONNECT only; hang: never respond to CONNECT)
 curl -k -x http://localhost:{{.proxyPort}} https://localhost:{{.port}}/help   # requires -s
   `
 

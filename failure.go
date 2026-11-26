@@ -22,14 +22,15 @@ const (
 	modeEOF         = "eof"          // 応答せずに FIN で閉じる
 	modeReset       = "reset"        // 応答せずに RST で切る
 	modeCloseNotify = "close_notify" // TLS の close_notify のアラートだけを返して閉じる
+	modeHang        = "hang"         // 何も返さず閉じもせず、クライアントが切るまで待つ
 	modeTunnel      = "tunnel"       // 宛先へ中継する
 	mode503         = "503"          // CONNECT に 503 を返す
 )
 
 var (
 	closeModes   = []string{modeEOF, modeReset}
-	tlsFailModes = []string{modeCloseNotify, modeReset, modeEOF}
-	proxyModes   = []string{modeTunnel, mode503, modeCloseNotify, modeReset, modeEOF}
+	tlsFailModes = []string{modeCloseNotify, modeReset, modeEOF, modeHang}
+	proxyModes   = []string{modeTunnel, mode503, modeCloseNotify, modeReset, modeEOF, modeHang}
 )
 
 // レベル warning・内容 close_notify の TLS 1.2 のアラートのレコード。
@@ -145,6 +146,10 @@ func failHandshake(conn net.Conn, r io.Reader, mode string) {
 		return
 	}
 	log.Printf("tlsfail: %s from %s", mode, conn.RemoteAddr())
+	if mode == modeHang {
+		waitUntilClientCloses("tlsfail", conn, r)
+		return
+	}
 	if mode == modeCloseNotify {
 		if _, err := conn.Write(closeNotifyRecord); err != nil {
 			log.Printf("tlsfail: %v", err)
@@ -198,6 +203,8 @@ func handleProxyConn(conn net.Conn, mode string) {
 	switch mode {
 	case mode503:
 		writeProxyStatus(conn, http.StatusServiceUnavailable)
+	case modeHang:
+		waitUntilClientCloses("proxy", conn, br)
 	case modeTunnel:
 		tunnel(conn, br, target)
 	default:
@@ -206,6 +213,15 @@ func handleProxyConn(conn net.Conn, mode string) {
 		}
 		failHandshake(conn, br, mode)
 	}
+}
+
+// waitUntilClientCloses は何も返さず、クライアントが接続を閉じるまで待つ。
+// 送られてきたバイトは読み捨てる（読まないと、クライアントの送信がいずれ詰まるため）
+func waitUntilClientCloses(name string, conn net.Conn, r io.Reader) {
+	conn.SetReadDeadline(time.Time{})
+	start := time.Now()
+	io.Copy(io.Discard, r)
+	log.Printf("%s: hang: %s が %.1f 秒後に切った", name, conn.RemoteAddr(), time.Since(start).Seconds())
 }
 
 func writeProxyStatus(w io.Writer, code int) {
