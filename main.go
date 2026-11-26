@@ -68,28 +68,64 @@ r+SqDCaV+SyAPxs/DgcPjmrZDAAj0OffwW+/qCv0dcY2HVj8OkxQaXOWsF3lkbWY
 dMeLXylc3OJdkaZQiKgfBLk=
 -----END PRIVATE KEY-----`)
 
+// テストからも既定値で参照できるよう、フラグはパッケージの変数として定義する（Parse は main で行う）
 var (
-	ssl                   *bool
-	port                  *int
-	readTimeoutMsec       *int
-	writeTimeoutMsec      *int
-	readHeaderTimeoutMsec *int
-	idleTimeoutMsec       *int
-	gzipEnable            *bool
+	ssl                   = flag.Bool("s", false, "ssl")
+	port                  = flag.Int("p", 3001, "binding port")
+	readTimeoutMsec       = flag.Int("rt", 0, "read timeout milliseconds")
+	readHeaderTimeoutMsec = flag.Int("rht", 0, "read header timeout milliseconds")
+	writeTimeoutMsec      = flag.Int("wt", 0, "write timeout milliseconds")
+	idleTimeoutMsec       = flag.Int("it", 0, "idle timeout milliseconds")
+	gzipEnable            = flag.Bool("gz", false, "gzip")
+	tlsFailPort           = flag.Int("tlsfail-port", 0, "port that drops the connection during the TLS handshake (0 = disabled)")
+	tlsFailMode           = flag.String("tlsfail-mode", modeCloseNotify, "close_notify | reset | eof")
+	proxyPort             = flag.Int("proxy-port", 0, "fake proxy port accepting CONNECT only (0 = disabled)")
+	proxyMode             = flag.String("proxy-mode", modeTunnel, "tunnel | 503 | close_notify | reset | eof")
 	tlsConfig             *tls.Config
 )
 
 func main() {
-	ssl = flag.Bool("s", false, "ssl")
-	port = flag.Int("p", 3001, "binding port")
-	readTimeoutMsec = flag.Int("rt", 0, "read timeout milliseconds")
-	readHeaderTimeoutMsec = flag.Int("rht", 0, "read header timeout milliseconds")
-	writeTimeoutMsec = flag.Int("wt", 0, "write timeout milliseconds")
-	idleTimeoutMsec = flag.Int("it", 0, "idle timeout milliseconds")
-	gzipEnable = flag.Bool("gz", false, "gzip")
 	flag.Parse()
 
+	startRawServer("tlsfail", *tlsFailPort, *tlsFailMode, tlsFailModes, serveTLSFail)
+	startRawServer("proxy", *proxyPort, *proxyMode, proxyModes, serveProxy)
+
+	e := newEcho()
+
+	if *ssl {
+		cert, err := tls.X509KeyPair(localhostCert, localhostKey)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
+	sc := echo.StartConfig{
+		Address: fmt.Sprintf(":%d", *port),
+		// StartTLS は h2 を有効にするので使わない。v4 の StartServer と同じく HTTP/1.1 で TLS を待つ
+		TLSConfig: tlsConfig,
+		BeforeServeFunc: func(s *http.Server) error {
+			// v5 は ReadTimeout を 30 秒にするので、フラグの値（既定は 0 = 無制限）で上書きする
+			s.ReadTimeout = time.Duration(*readTimeoutMsec) * time.Millisecond
+			s.ReadHeaderTimeout = time.Duration(*readHeaderTimeoutMsec) * time.Millisecond
+			s.WriteTimeout = time.Duration(*writeTimeoutMsec) * time.Millisecond
+			s.IdleTimeout = time.Duration(*idleTimeoutMsec) * time.Millisecond
+			// /keepalive が同じ接続の何本目の要求かを数えるのに使う
+			s.ConnContext = connContext
+			log.Println(s)
+			return nil
+		},
+	}
+
+	if err := sc.Start(context.Background(), e); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func newEcho() *echo.Echo {
 	e := echo.New()
+	e.Pre(countRequestsPerConn)
 	e.Use(middleware.RequestLogger())
 	e.Use(middleware.Recover())
 	// v5 の CORS() は引数なしだと設定エラーになる。v4 の既定と同じく全オリジンを許可する
@@ -116,34 +152,10 @@ func main() {
 	e.GET("/invalidlength/short", invalidlengthTooShort)
 	e.GET("/statuscode/:code", statuscode)
 	e.GET("/nabeatsu/:num", nabeatsu)
+	e.Any("/close/:mode", closeHandler)
+	e.Any("/keepalive/:mode", keepAliveHandler)
 
-	if *ssl {
-		cert, err := tls.X509KeyPair(localhostCert, localhostKey)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
-	}
-
-	sc := echo.StartConfig{
-		Address: fmt.Sprintf(":%d", *port),
-		// StartTLS は h2 を有効にするので使わない。v4 の StartServer と同じく HTTP/1.1 で TLS を待つ
-		TLSConfig: tlsConfig,
-		BeforeServeFunc: func(s *http.Server) error {
-			// v5 は ReadTimeout を 30 秒にするので、フラグの値（既定は 0 = 無制限）で上書きする
-			s.ReadTimeout = time.Duration(*readTimeoutMsec) * time.Millisecond
-			s.ReadHeaderTimeout = time.Duration(*readHeaderTimeoutMsec) * time.Millisecond
-			s.WriteTimeout = time.Duration(*writeTimeoutMsec) * time.Millisecond
-			s.IdleTimeout = time.Duration(*idleTimeoutMsec) * time.Millisecond
-			log.Println(s)
-			return nil
-		},
-	}
-
-	if err := sc.Start(context.Background(), e); err != nil {
-		log.Fatal(err)
-	}
+	return e
 }
 
 func dump(c *echo.Context) error {
@@ -186,11 +198,21 @@ curl http://localhost:{{.port}}/json/invalid
 curl http://localhost:{{.port}}/invalidlength/long
 curl http://localhost:{{.port}}/invalidlength/short
 curl http://localhost:{{.port}}/statuscode/:code
+curl http://localhost:{{.port}}/close/eof                  # read the request, then close without responding (FIN)
+curl http://localhost:{{.port}}/close/reset                # read the request, then reset without responding (RST)
+curl http://localhost:{{.port}}/keepalive/eof?nth=2        # respond until the nth request on the same connection, then close
+curl http://localhost:{{.port}}/keepalive/reset?nth=2
+
+-tlsfail-port=N -tlsfail-mode=close_notify|reset|eof       # drop the connection after receiving the ClientHello
+curl -k https://localhost:{{.tlsFailPort}}/
+
+-proxy-port=N -proxy-mode=tunnel|503|close_notify|reset|eof  # fake proxy (CONNECT only)
+curl -k -x http://localhost:{{.proxyPort}} https://localhost:{{.port}}/help   # requires -s
   `
 
 	t := template.Must(template.New("name").Parse(msg))
 	buf := new(bytes.Buffer)
-	data := map[string]interface{}{"port": *port}
+	data := map[string]interface{}{"port": *port, "tlsFailPort": *tlsFailPort, "proxyPort": *proxyPort}
 	t.Execute(buf, data)
 
 	return c.String(http.StatusOK, buf.String())
