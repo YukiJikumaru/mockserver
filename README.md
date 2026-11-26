@@ -8,6 +8,7 @@ HTTP クライアントを試すためのモックサーバーです。
 - 同じ接続の N 本目の要求で切る
 - TLS のハンドシェイクの途中で切る
 - プロキシの CONNECT で失敗させる
+- 同じ要求を繰り返し送ると、失敗してから成功する
 
 クライアントのタイムアウト・リトライ・エラー処理が、それぞれの失敗でどう動くかを確かめるのに使えます。
 
@@ -223,6 +224,75 @@ begin
 rescue => e
   puts "#{e.class}: #{e.message}"
 end
+```
+
+## 要求ごとに応答を変える（`/sequence`）
+
+「1 回目は切られ、2・3 回目は 503、4 回目で成功する」のように、同じ要求を繰り返し送ったときの応答を、1 回ごとに変えます。リトライが最後に成功するか、何回送ったか、どれだけ間を空けたかを確かめるのに使います。
+
+| パス | メソッド | 動き |
+|---|---|---|
+| `/sequence/:key?steps=...` | すべて | 同じ `key` への要求に、`steps` を先頭から 1 つずつ使って応答する。使い切ったら最後の 1 つを繰り返す |
+| `/sequence/:key/history` | GET | その `key` で受けた要求の一覧を JSON で返す |
+| `/sequence/:key/reset` | すべて | その `key` の回数と一覧を消して、数え直す |
+
+`steps` には、次の step をカンマで区切って並べます。例: `steps=reset,503*2,200`
+
+| step | 応答 |
+|---|---|
+| `200`〜`599` | そのステータスコードを返す |
+| `eof`・`reset` | 要求を本文まで読んでから、応答せずに切る（[応答せずに切る](#応答せずに切る) と同じ） |
+| `sleep:ミリ秒` | 指定した時間だけ待ってから 200 を返す |
+| `step*N` | 同じ step を N 回使う。例: `503*3` |
+
+- 応答には、その `key` で何回目の要求かを `X-Sequence-Attempt` ヘッダーで付けます。`eof`・`reset` は応答しないので付きません。
+- `key` ごとに数えます。テストごとに別の `key` を使えば、並べて走らせても混ざりません。
+- どの step を使うかは、その回に受けた要求の `steps` で決まります。同じ URL を送り直す前提です。
+- `steps` が正しくないときは 400 を返し、回数には数えません。
+- 回数と一覧は、サーバーのメモリにだけ持ちます。再起動すると消えます。
+
+`/sequence/:key/history` の各項目は次のとおりです。
+
+| 項目 | 内容 |
+|---|---|
+| `attempt` | 何回目の要求か |
+| `time` | 受けた時刻 |
+| `since_prev_ms` | 前の要求からの間隔（ミリ秒）。1 回目は 0 |
+| `method` | メソッド |
+| `step` | その回に使った step |
+| `headers` | 要求のヘッダー。同じ名前が複数あるときは `, ` でつなぐ |
+| `body` | 要求の本文 |
+
+```ruby
+require 'net/http'
+require 'json'
+
+# 1 回目は RST、2・3 回目は 503、4 回目で成功する
+path = '/sequence/order-1?steps=reset,503*2,200'
+
+# 試したいリトライの例: 成功するまで、1 秒ずつ空けて最大 5 回送る
+Net::HTTP.start('localhost', 3001) do |http|
+  http.max_retries = 0 # クライアント自身の送り直しを止め、送った回数をこのループの回数に揃える
+  5.times do |i|
+    res = http.get(path)
+    puts "#{i + 1} 回目: #{res.code}"
+    break if res.is_a?(Net::HTTPSuccess)
+
+    sleep 1
+  rescue => e
+    puts "#{i + 1} 回目: #{e.class}"
+    sleep 1
+  end
+end
+
+# サーバーが受けた回数と間隔を確かめる
+history = JSON.parse(Net::HTTP.get(URI('http://localhost:3001/sequence/order-1/history')))
+history['attempts'].each do |a|
+  puts "#{a['attempt']} 回目: #{a['step']}（前の要求から #{a['since_prev_ms']} ms）"
+end
+
+# 次の試験のために数え直す
+Net::HTTP.post(URI('http://localhost:3001/sequence/order-1/reset'), '')
 ```
 
 ## HTTPS の証明書

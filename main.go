@@ -155,6 +155,11 @@ func newEcho() *echo.Echo {
 	e.Any("/close/:mode", closeHandler)
 	e.Any("/keepalive/:mode", keepAliveHandler)
 
+	seq := newSequenceStore()
+	e.Any("/sequence/:key", seq.handle)
+	e.GET("/sequence/:key/history", seq.handleHistory)
+	e.Any("/sequence/:key/reset", seq.handleReset)
+
 	return e
 }
 
@@ -202,6 +207,9 @@ curl http://localhost:{{.port}}/close/eof                  # read the request, t
 curl http://localhost:{{.port}}/close/reset                # read the request, then reset without responding (RST)
 curl http://localhost:{{.port}}/keepalive/eof?nth=2        # respond until the nth request on the same connection, then close
 curl http://localhost:{{.port}}/keepalive/reset?nth=2
+curl "http://localhost:{{.port}}/sequence/KEY?steps=reset,503*2,200"  # use the next step on each request to KEY (status code | eof | reset | sleep:msec)
+curl http://localhost:{{.port}}/sequence/KEY/history                # requests received for KEY (JSON)
+curl -X POST http://localhost:{{.port}}/sequence/KEY/reset          # start counting KEY again
 
 -tlsfail-port=N -tlsfail-mode=close_notify|reset|eof       # drop the connection after receiving the ClientHello
 curl -k https://localhost:{{.tlsFailPort}}/
