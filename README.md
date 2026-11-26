@@ -92,12 +92,9 @@ end
 |---|---|---|
 | `/close/eof` | すべて | 要求を本文まで読んでから、応答せずに FIN で閉じる |
 | `/close/reset` | すべて | 要求を本文まで読んでから、応答せずに RST で切る |
-| `/keepalive/eof?nth=N` | すべて | 同じ接続の N 本目（既定は 2）の要求を読んだところで、FIN で閉じる。それより前の要求には 200 を返す |
-| `/keepalive/reset?nth=N` | すべて | 同じく RST で切る |
 
 - 要求は本文まで読み切ってから閉じます。読み残しがあると、OS は FIN ではなく RST を送ってしまうためです。
 - `-s` で起動していても TLS の close_notify は送らず、下の TCP をそのまま閉じます。
-- `/keepalive/*` は、パスを問わず、その接続で受けた要求の本数を数えます。接続ごとに数え直すので、クライアントが新しい接続で送り直せば、その要求は 1 本目として扱われます。
 
 ```ruby
 require 'net/http'
@@ -109,15 +106,64 @@ begin
 rescue => e
   puts "#{e.class}: #{e.message}"
 end
+```
+
+### 同じ接続の N 本目で切る（`/keepalive`）
+
+使い回していた keep-alive の接続を相手が閉じていた、という状況を作ります。クライアントが、切られた要求を新しい接続で送り直すかどうかを確かめるのに使います。
+
+| パス | メソッド | 動き |
+|---|---|---|
+| `/keepalive/eof?nth=N` | すべて | 同じ接続の N 本目の要求を読んだところで、応答せずに FIN で閉じる |
+| `/keepalive/reset?nth=N` | すべて | 同じく、応答せずに RST で切る |
+
+`nth` は 1 以上の整数で、省略すると 2 です。`nth=1` なら `/close/*` と同じ動きになります。
+
+N 本目より前の要求には、200 で次の本文を返します。`n` はその接続で何本目の要求か、`N` は `nth` の値です。
+
+```
+request n on this connection (closes at N)
+```
+
+本数の数え方は次のとおりです。
+
+- TCP の接続ごとに数えます。新しい接続では 1 から数え直します。
+  - クライアントが新しい接続で送り直すと、その応答は `request 1 on this connection` になります。本文を見れば、新しい接続で届いたかが分かります。
+  - クライアントが接続を使い回さない（要求のたびに新しい接続を作る）と、毎回 1 本目になるので切られません。
+- パスを問わず数えます。`/nothing` に送った次に `/keepalive/eof` を送れば、2 本目として切られます。エラーになった要求（404 や 405）も数えます。
+- メソッドを問わず数えます。POST も 1 本として数えます。
+
+ほかの決まりは次のとおりです。
+
+- 切る前に、要求を本文まで読み切ります。`-s` で起動していても TLS の close_notify は送りません（[応答せずに切る](#応答せずに切る) と同じ）。
+- `eof`・`reset` 以外のパスや、`nth` が 1 以上の整数でないときは、400 を返します。
+- 切ったときは、サーバーのログに次のような行が出ます。
+
+  ```
+  2026/11/26 11:22:06 close: eof GET /keepalive/eof?nth=2 from 127.0.0.1:50000
+  ```
+
+```ruby
+require 'net/http'
 
 # 同じ接続で 2 本送る。2 本目はサーバーが応答せずに閉じる
 Net::HTTP.start('localhost', 3001) do |http|
   puts http.get('/keepalive/eof').body # => request 1 on this connection (closes at 2)
   begin
-    # クライアントが新しい接続で送り直した場合は、その接続の 1 本目として 200 が返る
+    # クライアントが新しい接続で送り直すと、その接続の 1 本目として 200 が返る
     puts http.get('/keepalive/eof').body
   rescue => e
     puts "#{e.class}: #{e.message}"
+  end
+end
+
+# 3 本目で RST で切る。クライアントの送り直しを止めて、切られたことをそのまま見る
+Net::HTTP.start('localhost', 3001) do |http|
+  http.max_retries = 0
+  3.times do |i|
+    puts http.get('/keepalive/reset?nth=3').body
+  rescue => e
+    puts "#{i + 1} 本目: #{e.class}: #{e.message}"
   end
 end
 ```
